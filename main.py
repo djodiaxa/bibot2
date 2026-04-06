@@ -4,72 +4,91 @@ import pandas_ta as ta
 import time
 import schedule
 import os
+import requests
 
-print("🚀 Menyalakan Mesin Cuangine (Bot Bybit Futures)...")
+print("🚀 Menyalakan Mesin Cuangine (Bot Bybit + Telegram)...")
 
-# Mengambil API Key dari tab Variables di Railway
+# Mengambil Kunci dari Railway
 API_KEY = os.environ.get('BYBIT_API_KEY')
 API_SECRET = os.environ.get('BYBIT_API_SECRET')
+TG_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-# Inisialisasi Bybit lewat CCXT
+# Fungsi untuk ngirim pesan ke Telegram Abang
+def lapor_telegram(pesan):
+    if TG_TOKEN and TG_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        payload = {"chat_id": TG_CHAT_ID, "text": pesan, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, json=payload)
+        except Exception as e:
+            print(f"❌ Gagal kirim Telegram: {e}")
+
+lapor_telegram("🤖 *Bot Trading Aktif!*\nSiap memantau market SOL/USDT 24/7 buat Abang 🚀")
+
+# Inisialisasi Bybit
 exchange = ccxt.bybit({
     'apiKey': API_KEY,
     'secret': API_SECRET,
     'enableRateLimit': True,
-    'options': {
-        'defaultType': 'linear' # Wajib 'linear' untuk Futures/Derivatives USDT
-    }
+    'options': {'defaultType': 'linear'}
 })
 
 SYMBOL = 'SOL/USDT:USDT'
-TIMEFRAME = '15m' # Cek grafik per 15 menit
-TRADE_SIZE = 0.1 # Jumlah SOL yang dibeli (sesuaikan dengan modal $10 pakai leverage)
+TIMEFRAME = '15m'
+TRADE_SIZE = 0.1 
 
 def check_buy_condition():
     try:
-        # 1. Ambil data grafik OHLCV
         bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # 2. Hitung indikator RSI
         df['rsi'] = ta.rsi(df['close'], length=14)
         current_rsi = df['rsi'].iloc[-1]
         current_price = df['close'].iloc[-1]
         
-        print(f"📊 Cek Market {SYMBOL} | Harga: ${current_price} | RSI: {current_rsi:.2f}")
+        print(f"📊 Market {SYMBOL} | Harga: ${current_price} | RSI: {current_rsi:.2f}")
 
-        # 3. Logika "Yang Cuan Aja": Beli pas lagi diskon/oversold (RSI < 30)
+        # Sinyal Buy jika RSI < 30
         if current_rsi < 30:
-            print(f"🔥 SINYAL BUY MUNCUL! RSI di bawah 30 ({current_rsi:.2f}). Mengeksekusi Order...")
+            pesan_sinyal = f"🔥 *SINYAL BUY!* RSI jatuh ke {current_rsi:.2f}\nMengeksekusi pembelian {SYMBOL}..."
+            print(pesan_sinyal)
+            lapor_telegram(pesan_sinyal)
             
-            # Buka Posisi Long (Beli)
+            # Eksekusi Beli
             order = exchange.create_market_buy_order(SYMBOL, TRADE_SIZE)
             buy_price = order['average']
-            print(f"✅ SUKSES MEMBELI {TRADE_SIZE} {SYMBOL} di harga ${buy_price}")
             
-            # Pasang Jaring Jaring Keamanan (Take Profit & Stop Loss)
-            # Take profit saat harga naik 5%, Stop Loss kalau harga turun 2%
+            pesan_sukses = f"✅ *SUKSES BELI!*\nCoin: {SYMBOL}\nJumlah: {TRADE_SIZE}\nHarga: ${buy_price}"
+            print(pesan_sukses)
+            lapor_telegram(pesan_sukses)
+            
+            # Pasang Take Profit (5%) & Stop Loss (2%)
             take_profit_price = buy_price * 1.05
             stop_loss_price = buy_price * 0.98
             
-            # Kirim perintah Take Profit ke Bybit
             exchange.create_order(SYMBOL, 'market', 'sell', TRADE_SIZE, params={
                 'stopLossPrice': stop_loss_price,
                 'takeProfitPrice': take_profit_price,
                 'reduceOnly': True
             })
-            print(f"🎯 Jaring otomatis dipasang! TP: ${take_profit_price:.2f} | SL: ${stop_loss_price:.2f}")
             
-            # Tidurkan bot sebentar biar nggak dobel beli
+            pesan_jaring = f"🎯 *Jaring Dipasang!*\n💰 Take Profit: ${take_profit_price:.2f}\n🛡 Stop Loss: ${stop_loss_price:.2f}"
+            print(pesan_jaring)
+            lapor_telegram(pesan_jaring)
+            
+            # Tidur sejam biar nggak dobel beli
             time.sleep(3600) 
             
     except Exception as e:
-        print(f"❌ Terjadi Error: {e}")
+        error_msg = f"❌ *ERROR BOT:*\n{e}"
+        print(error_msg)
+        lapor_telegram(error_msg)
 
-# Jalankan pengecekan setiap 1 menit
+# Jadwal cek setiap 1 menit
 schedule.every(1).minutes.do(check_buy_condition)
 
-print("✅ Bot Aktif dan sedang memantau market 24/7...")
 while True:
     schedule.run_pending()
     time.sleep(1)
+    
