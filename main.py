@@ -6,7 +6,7 @@ import schedule
 import os
 import requests
 
-print("🚀 Menyalakan Mesin Cuangine V2 (Bot Bybit + Telegram)...")
+print("🚀 Menyalakan Mesin Cuangine V3 (Mode Detektif Cuan)...")
 
 API_KEY = os.environ.get('BYBIT_API_KEY')
 API_SECRET = os.environ.get('BYBIT_API_SECRET')
@@ -22,7 +22,7 @@ def lapor_telegram(pesan):
         except Exception as e:
             print(f"❌ Gagal kirim Telegram: {e}")
 
-lapor_telegram("🤖 *Bot Cuangine V2 Aktif!*\nSiap berburu dolar buat Bang Hans 🚀")
+lapor_telegram("🤖 *Bot Cuangine V3 Aktif!*\nSekarang bot bakal lapor pas JUAL juga Bang Hans! 🚀")
 
 exchange = ccxt.bybit({
     'apiKey': API_KEY,
@@ -35,69 +35,75 @@ SYMBOL = 'SOL/USDT:USDT'
 TIMEFRAME = '15m'
 TRADE_SIZE = 0.1 
 
-# Penghitung waktu untuk laporan rutin
+# Variabel Ingatan Bot
+punya_posisi_sebelumnya = False
 menit_ke = 0 
 
-def check_buy_condition():
-    global menit_ke
+def check_market():
+    global punya_posisi_sebelumnya, menit_ke
     try:
-        # 1. Cek Harga & RSI
+        # 1. Ambil Data Market
         bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['rsi'] = ta.rsi(df['close'], length=14)
         current_rsi = df['rsi'].iloc[-1]
         current_price = df['close'].iloc[-1]
         
-        log_pantau = f"📊 Market {SYMBOL} | Harga: ${current_price} | RSI: {current_rsi:.2f}"
-        print(log_pantau)
+        print(f"📊 Market {SYMBOL} | Harga: ${current_price} | RSI: {current_rsi:.2f}")
 
-        # 2. Cek apakah ada posisi yang sedang jalan (Profit / Loss)
-        posisi_terbuka = ""
+        # 2. Cek Posisi Sekarang
+        posisi_skrg = False
+        pnl_skrg = 0
         positions = exchange.fetch_positions([SYMBOL])
         for pos in positions:
             if float(pos['contracts']) > 0:
-                pnl = float(pos['info']['unrealisedPnl'])
-                status_pnl = "🟢 CUAN" if pnl > 0 else "🔴 MINUS"
-                posisi_terbuka = f"\n\n📈 *Posisi Aktif:*\nUkuran: {pos['contracts']} SOL\nUnrealized PnL: {status_pnl} ${pnl:.4f}"
+                posisi_skrg = True
+                pnl_skrg = float(pos['info']['unrealisedPnl'])
 
-        # 3. Laporan Rutin Telegram (Setiap 15 Menit agar tidak spam)
+        # 3. LOGIKA DETEKTIF: JUAL TERDETEKSI
+        # Kalau tadi punya posisi, sekarang nggak ada -> Berarti udah laku (TP atau SL kena)
+        if punya_posisi_sebelumnya and not posisi_skrg:
+            # Ambil riwayat trading terakhir buat tau cuan/rugi pastinya
+            history = exchange.fetch_closed_trades(SYMBOL, limit=1)
+            if history:
+                last_trade = history[0]
+                profit = last_trade['info']['closedPnl']
+                status_jual = "💰 CUAN GEDE!" if float(profit) > 0 else "💸 CUT LOSS (RUGI)"
+                lapor_telegram(f"🚀 *JUAL TERSEKUSI!*\n\nStatus: {status_jual}\nProfit/Loss: `${profit}`\n\nSaldo modal aman, siap berburu lagi! 🔥")
+        
+        punya_posisi_sebelumnya = posisi_skrg
+
+        # 4. Laporan Rutin (Tiapa 15 Menit)
         if menit_ke % 15 == 0:
-            lapor_telegram(f"⏱️ *UPDATE PASAR (15 Menit)*\n{log_pantau}{posisi_terbuka}")
+            status_pos = "📈 Sedang Jalan" if posisi_skrg else "💤 Menunggu Sinyal"
+            info_pnl = f"\nEstimasi PnL: `${pnl_skrg:.4f}`" if posisi_skrg else ""
+            lapor_telegram(f"⏱️ *LAPORAN RUTIN*\nHarga {SYMBOL}: `${current_price}`\nRSI: `{current_rsi:.2f}`\nStatus: {status_pos}{info_pnl}")
+        
         menit_ke += 1
 
-        # 4. Sinyal Eksekusi Beli (Hanya jika belum punya posisi)
-        if current_rsi < 30 and posisi_terbuka == "":
-            pesan_sinyal = f"🔥 *SINYAL BUY!* RSI jatuh ke {current_rsi:.2f}\nSikat miring {SYMBOL}..."
-            print(pesan_sinyal)
-            lapor_telegram(pesan_sinyal)
+        # 5. Logika BELI (Hanya jika sedang kosong)
+        if current_rsi < 30 and not posisi_skrg:
+            lapor_telegram(f"🔥 *SINYAL BELI!* RSI {current_rsi:.2f}\nSikat {SYMBOL}!")
             
-            # Eksekusi Beli
             order = exchange.create_market_buy_order(SYMBOL, TRADE_SIZE)
             buy_price = order['average']
             
-            pesan_sukses = f"✅ *SUKSES BELI!*\nCoin: {SYMBOL}\nJumlah: {TRADE_SIZE}\nHarga: ${buy_price}"
-            print(pesan_sukses)
-            lapor_telegram(pesan_sukses)
+            lapor_telegram(f"✅ *SUKSES BELI!*\nCoin: {SYMBOL}\nHarga: `${buy_price}`")
             
-            # Pasang Take Profit (5%) & Stop Loss (2%)
-            take_profit_price = buy_price * 1.05
-            stop_loss_price = buy_price * 0.98
-            
+            # Pasang Jaring TP/SL
+            tp = buy_price * 1.05
+            sl = buy_price * 0.98
             exchange.create_order(SYMBOL, 'market', 'sell', TRADE_SIZE, params={
-                'stopLossPrice': stop_loss_price,
-                'takeProfitPrice': take_profit_price,
-                'reduceOnly': True
+                'stopLossPrice': sl, 'takeProfitPrice': tp, 'reduceOnly': True
             })
-            
-            lapor_telegram(f"🎯 *Jaring Dipasang!*\n💰 Take Profit: ${take_profit_price:.2f}\n🛡 Stop Loss: ${stop_loss_price:.2f}")
-            
-    except Exception as e:
-        print(f"❌ ERROR BOT: {e}")
+            lapor_telegram(f"🎯 *JARING DIPASANG!*\nTarget Jual: `${tp:.2f}`\nRem Darurat: `${sl:.2f}`")
 
-# Jalankan rutin
-schedule.every(1).minutes.do(check_buy_condition)
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+schedule.every(1).minutes.do(check_market)
 
 while True:
     schedule.run_pending()
     time.sleep(1)
-    
+                
